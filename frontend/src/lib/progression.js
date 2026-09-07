@@ -19,11 +19,11 @@
 import { modeOf } from './history.js'
 import { EXIDX } from './exercises.js'
 
-export const POLICIES = ['off', 'linear', 'greyskull', 'double', 'time']
+export const POLICIES = ['off', 'linear', 'greyskull', 'double', 'time', 'percent']
 
 // Which policies can sensibly drive which logging mode.
 export const POLICIES_FOR = {
-  reps: ['off', 'linear', 'greyskull', 'double'],
+  reps: ['off', 'linear', 'greyskull', 'double', 'percent'],
   time: ['off', 'time'],
   cardio: ['off']
 }
@@ -33,15 +33,25 @@ export const POLICY_NAME = {
   linear: 'Linear progression',
   greyskull: 'Greyskull LP',
   double: 'Double progression',
-  time: 'Add time'
+  time: 'Add time',
+  percent: '5/3/1 (percentage)'
 }
 export const POLICY_DESC = {
   off: 'Targets stay where you set them.',
   linear: 'Hit every rep in every set and the weight goes up. Repeated misses trigger a deload.',
   greyskull: 'Two straight sets plus a final set taken to failure. Beat the target on that set and the weight goes up — double if you double the reps. One failure resets 10 %.',
   double: 'Work up through a rep range at the same weight. Reach the top of the range in every set and the weight goes up, reps back to the bottom.',
-  time: 'Hold every set for the full duration and the target goes up.'
+  time: 'Hold every set for the full duration and the target goes up.',
+  percent: 'Working sets are a percentage of your training max. Last set of weeks 1–3 is AMRAP; week 4 is a deload. TM goes up after a successful cycle.'
 }
+
+// Classic Wendler 5/3/1 wave — % of training max, last set AMRAP on weeks 1–3.
+export const PERCENT_WAVE = [
+  [{ pct: 0.65, reps: 5 }, { pct: 0.75, reps: 5 }, { pct: 0.85, reps: 5 }],
+  [{ pct: 0.70, reps: 3 }, { pct: 0.80, reps: 3 }, { pct: 0.90, reps: 3 }],
+  [{ pct: 0.75, reps: 5 }, { pct: 0.85, reps: 3 }, { pct: 0.95, reps: 1 }],
+  [{ pct: 0.40, reps: 5 }, { pct: 0.50, reps: 5 }, { pct: 0.60, reps: 5 }]
+]
 
 // Sessions of repeated misses before a deload. Greyskull resets on the first failure by
 // design; the general linear policy gives you two more cracks at it first.
@@ -146,10 +156,11 @@ export function stallCount(sessions) {
 /**
  * The next prescription for one exercise.
  *
- * Returns `{ weight, reps, sec, why, kind }` — `kind` being one of
+ * Returns `{ weight, reps, sec, why, kind, perSet? }` — `kind` being one of
  * first | up | hold | deload | off, and `why` a translatable template + args so the app can
  * always answer "why this number?". A field the policy has no opinion on comes back
- * undefined and the caller keeps whatever the plan said.
+ * undefined and the caller keeps whatever the plan said. `perSet` (5/3/1) is an array of
+ * `{ weight, reps }` applied one-to-one onto unfinished sets.
  */
 export function nextPrescription(S, cfg, routine) {
   const mode = modeOf(cfg)
@@ -157,6 +168,8 @@ export function nextPrescription(S, cfg, routine) {
   const unit = S.unit || 'kg'
   const inc = cfg.inc > 0 ? cfg.inc : (mode === 'time' ? DEFAULT_SEC_INCREMENT : defaultIncrement(cfg.id, unit))
   if (policy === 'off') return { policy, kind: 'off' }
+
+  if (policy === 'percent') return percentPrescription(S, cfg, unit, inc)
 
   const sessions = sessionsFor(S, cfg.id, cfg).filter(s => s.mode === mode)
   const last = sessions[sessions.length - 1]
@@ -225,12 +238,79 @@ export function nextPrescription(S, cfg, routine) {
   return { policy, kind: 'hold', weight: w, why: ['Missed reps last time — same weight again ({0} of {1} to go).', deloadAt - stalls, deloadAt] }
 }
 
+/** Past sessions that were logged under the percent policy (ignore linear history). */
+export function percentSessions(S, exId) {
+  const out = []
+  ;(S.workouts || []).forEach(w => {
+    const entry = (w.entries || []).find(e => e.id === exId)
+    if (!entry || !entry.sets?.some(s => s.done)) return
+    if (entry.plan?.policy !== 'percent') return
+    out.push({ d: w.d, entry })
+  })
+  return out
+}
+
+function week3Hit(entry) {
+  const need = entry.plan?.perSet?.[2]?.reps
+  if (!(need > 0)) return false
+  const sets = (entry.sets || []).filter(s => s.done)
+  if (sets.length < 3) return false
+  const last = sets[sets.length - 1]
+  return (last.r || 0) >= need
+}
+
+function percentPrescription(S, cfg, unit, inc) {
+  const tm0 = Number(cfg.tm)
+  if (!(tm0 > 0)) {
+    return {
+      policy: 'percent', kind: 'first',
+      why: ['Set a training max on this exercise to start 5/3/1.']
+    }
+  }
+  const past = percentSessions(S, cfg.id)
+  const count = past.length
+  const week = (count % 4) + 1
+  let successes = 0
+  for (let c = 0; c < Math.floor(count / 4); c++) {
+    const w3 = past[c * 4 + 2]
+    if (w3 && week3Hit(w3.entry)) successes++
+  }
+  const tm = snap(tm0 + successes * inc, inc)
+  const wave = PERCENT_WAVE[week - 1]
+  const perSet = wave.map(({ pct, reps }) => ({
+    weight: snap(tm * pct, inc),
+    reps
+  }))
+  const kind = week === 4 ? 'deload' : (successes > 0 && week === 1 && count > 0 ? 'up' : 'hold')
+  const pctLabel = wave.map(x => Math.round(x.pct * 100)).join(' / ')
+  return {
+    policy: 'percent', kind, tm, week, perSet,
+    weight: perSet[0].weight, reps: perSet[0].reps, sets: 3,
+    why: week === 4
+      ? ['Week 4 of 4 — deload at {0}% of {1} {2}.', pctLabel, tm, unit]
+      : ['Week {0} of 4 — {1}% of {2} {3}. Last set is AMRAP.', week, pctLabel, tm, unit]
+  }
+}
+
 /**
  * Apply a prescription to freshly built sets. Only the fields the policy actually decided
- * are touched, and only on sets that have not been logged yet.
+ * are touched, and only on sets that have not been logged yet. `perSet` (5/3/1) writes each
+ * unfinished set even when kind is `first`/`hold`/`deload`.
  */
 export function applyPrescription(sets, p) {
-  if (!p || p.kind === 'off' || p.kind === 'first') return sets
+  if (!p || p.kind === 'off') return sets
+  if (p.perSet && p.perSet.length) {
+    return sets.map((s, i) => {
+      if (s.done) return s
+      const target = p.perSet[i] || p.perSet[p.perSet.length - 1]
+      if (!target) return s
+      const out = { ...s }
+      if (target.weight != null) out.w = target.weight
+      if (target.reps != null) out.r = target.reps
+      return out
+    })
+  }
+  if (p.kind === 'first') return sets
   return sets.map(s => {
     if (s.done) return s
     const out = { ...s }

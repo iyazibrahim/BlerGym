@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Evidence-based starters, gyms, notes, plates, and 5/3/1
+
+- **Starter plans** — picker with 5-day PPLUL, 5-day Upper/Lower, 3-day full body, time-crunched 3-day PPL, 5×5, and 5/3/1. Each hypertrophy split ships in dumbbell, machine, and gym kits. See [docs/STARTER_EVIDENCE.md](docs/STARTER_EVIDENCE.md).
+- **Gyms** — named locations with a kit and/or typed/pasted machine list (aliases for Life Fitness, Hammer Strength, etc.). Switch gym to filter the library and adapt the plan; build a starter from that floor. Coach library slice respects the active gym.
+- **Per-exercise notes** — optional cue on a routine exercise, shown in the workout and carried in plan shares.
+- **Plate calculator** — tap the weight header during a reps set to see plates per side (kg/lb).
+- **5/3/1 (percentage)** — new progression policy: training max, classic 4-week wave, AMRAP top sets, deload week 4, TM bump after a successful week 3. History-derived; no stored cycle counters.
+
 ### The AI Coach
 
 openGym could always progress a plan. It could never *write* one, and it never looked at the

@@ -89,6 +89,7 @@ export function exLine(cfg, unit) {
   const load = cfg.weight ? ' · ' + fmtNum(cfg.weight) + ' ' + unit : ''
   if (mode === 'cardio') return `${n} × ${cfg.min || 20} min @ ${fmtNum(cfg.speed || 8)} km/h`
   if (mode === 'time') return `${n} × ${fmtSec(cfg.sec || 45)}${load}`
+  if (cfg.prog === 'percent') return cfg.tm > 0 ? `TM ${fmtNum(cfg.tm)} ${unit}` : '5/3/1'
   return `${n} × ${cfg.reps}${load}`
 }
 

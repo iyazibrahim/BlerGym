@@ -17,6 +17,12 @@ node_modules/
 # Local AI-assistant tooling — contributor's own setup, not part of the app
 .claude/
 .codex/
+.cursor/
 CLAUDE.md
 AGENTS.md
 graphify-out/
+
+# Internal / development documentation (not shipped with BlerGym)
+workflow.md
+ai-enablement/
+CONTRIBUTING.md

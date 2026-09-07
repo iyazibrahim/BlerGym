@@ -86,6 +86,8 @@ function cleanEx(e) {
   if (e.prog) o.prog = e.prog;
   if (e.inc > 0) o.inc = e.inc;
   if (e.repsMin != null) o.repsMin = e.repsMin;
+  if (e.tm > 0) o.tm = e.tm;
+  if (e.note) o.note = e.note;
   if (e.sg) o.sg = e.sg;
   return o;
 }
@@ -113,7 +115,7 @@ export function canonicalPlan(S) {
           min: mode === 'cardio' ? (e.min || 0) : 0,
           speed: mode === 'cardio' ? (e.speed || 0) : 0,
           weight: mode === 'cardio' ? 0 : (e.weight || 0),
-          prog: e.prog || '', inc: e.inc || 0, repsMin: e.repsMin || 0, sg: e.sg || ''
+          prog: e.prog || '', inc: e.inc || 0, repsMin: e.repsMin || 0, tm: e.tm || 0, sg: e.sg || ''
         };
       })
     })),
@@ -131,14 +133,42 @@ export function cleanPlan(S) {
 }
 
 /* ---------- the library slice the model gets to choose from ---------- */
-export function librarySlice(S, equipment) {
+export function librarySlice(S, equipment, allowIds) {
   const wanted = (equipment || []).map(x => String(x).toLowerCase());
   const customs = (S.customEx || []).map(c => ({ id: c.id, n: c.n, bp: c.bp, tg: null, eq: 'custom', custom: true }));
   // No equipment stated (or "everything") ⇒ the whole catalogue. Filtering to nothing would
   // leave the Coach unable to propose anything at all, which is a worse failure than a
   // slightly larger payload.
-  const base = wanted.length ? LIBRARY.filter(e => wanted.includes((e.eq || '').toLowerCase())) : LIBRARY;
+  let base = wanted.length ? LIBRARY.filter(e => wanted.includes((e.eq || '').toLowerCase())) : LIBRARY;
+  // An explicit id allow-list (active gym's matched machines) wins over equipment chips.
+  if (allowIds && allowIds.length) {
+    const set = new Set(allowIds.map(String));
+    const narrowed = base.filter(e => set.has(e.id));
+    if (narrowed.length) base = narrowed;
+  }
   return [...customs, ...(base.length ? base : LIBRARY)];
+}
+
+/** Matched machine ids on the active gym, if any — fed into librarySlice as an allow-list. */
+function gymAllowIds(S) {
+  if (!S?.activeGymId) return null;
+  const gym = (S.gyms || []).find(g => g.id === S.activeGymId);
+  if (!gym?.machines?.length) return null;
+  const ids = gym.machines.map(m => m.exId).filter(Boolean);
+  return ids.length ? ids : null;
+}
+
+/** Kit equipment tags when the active gym has no per-machine list yet. */
+function gymKitEquipment(S) {
+  if (!S?.activeGymId) return null;
+  const gym = (S.gyms || []).find(g => g.id === S.activeGymId);
+  if (!gym || gym.machines?.length) return null;
+  const KIT = {
+    dumbbell: ['dumbbell', 'body weight'],
+    machine: ['leverage machine', 'smith machine', 'cable', 'assisted', 'sled machine'],
+    gym: ['barbell', 'ez barbell', 'dumbbell', 'cable', 'leverage machine', 'smith machine', 'trap bar', 'body weight', 'sled machine']
+  };
+  return KIT[gym.kit] || null;
 }
 export const libraryHas = id => LIB_BY_ID.has(id);
 export const libraryName = id => LIB_BY_ID.get(id)?.n || null;
@@ -286,9 +316,9 @@ export function build(S, uid, opts = {}) {
       series: (S.bodyweight || []).filter(b => !p.window.from || b.d >= p.window.from).map(b => ({ d: b.d, w: b.w }))
     };
     if (opts.note) p.userNote = String(opts.note).slice(0, 1000);
-    p.library = librarySlice(S, profile?.equipment);
+    p.library = librarySlice(S, gymKitEquipment(S) || profile?.equipment, gymAllowIds(S));
   } else {
-    p.library = librarySlice(S, profile?.equipment);
+    p.library = librarySlice(S, gymKitEquipment(S) || profile?.equipment, gymAllowIds(S));
     // Creation for a returning user: what they have actually handled, so proposed baselines
     // start from evidence rather than optimism (B2/FR-20).
     const best = {};

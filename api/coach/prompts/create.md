@@ -48,6 +48,6 @@ Design a complete plan from `coachProfile` (their intake answers) and, if presen
 
 - `week` keys are weekday numbers as strings, values are `routines[].id` from this same answer.
 - `mode` is `reps` (use `reps`), `time` (use `sec`), or `cardio` (use `min` and `speed`).
-- `prog` on a routine is its default; on an exercise it overrides. `inc` is the load step in `meta.unit`; `repsMin` only matters for `double`.
+- `prog` on a routine is its default; on an exercise it overrides. `inc` is the load step in `meta.unit`; `repsMin` only matters for `double`; `tm` is the starting training max for `percent` (5/3/1) — you may set it when adding an exercise, but you never prescribe the weekly percentages yourself.
 - `sg`: give two exercises the same short string to superset them. They must be adjacent in the list.
 - `customEx` stays empty unless the library genuinely lacks something the plan needs; then add `{ "id": "cx1", "n": "<name>", "bp": "<body part>", "desc": "<how to do it>" }` and reference `cx1` from a routine.

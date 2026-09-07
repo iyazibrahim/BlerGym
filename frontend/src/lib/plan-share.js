@@ -38,6 +38,8 @@ function cleanEx(e) {
   if (e.prog) o.prog = e.prog
   if (e.inc > 0) o.inc = e.inc
   if (e.repsMin != null) o.repsMin = e.repsMin
+  if (e.tm > 0) o.tm = e.tm
+  if (e.note) o.note = e.note
   if (e.sg) o.sg = e.sg
   return o
 }

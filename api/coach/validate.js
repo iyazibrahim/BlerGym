@@ -25,7 +25,7 @@ export const CHANGE_TYPES = [
   'add-routine', 'remove-routine', 'rename-routine',
   'week'
 ];
-const POLICIES = ['off', 'linear', 'greyskull', 'double', 'time'];
+const POLICIES = ['off', 'linear', 'greyskull', 'double', 'time', 'percent'];
 const MODES = ['reps', 'time', 'cardio'];
 const MAX_CHANGES = 25;
 const MAX_ROUTINES = 7;
@@ -109,6 +109,8 @@ export function validatePlan(data, ctx = {}) {
       }
       if (isNum(e.inc) && e.inc > 0) clean.inc = e.inc;
       if (isInt(e.repsMin, 1, 100)) clean.repsMin = e.repsMin;
+      if (isNum(e.tm) && e.tm > 0) clean.tm = e.tm;
+      if (isStr(e.note)) clean.note = clampStr(e.note, 280);
       if (isStr(e.sg)) clean.sg = clampStr(e.sg, 20);
       if (isStr(e.why)) clean.why = clampStr(e.why, 400);
       ex.push(clean);

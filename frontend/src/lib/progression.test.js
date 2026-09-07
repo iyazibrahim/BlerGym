@@ -380,14 +380,132 @@ describe('applyPrescription', () => {
     expect(applyPrescription(sets, { kind: 'up', weight: 42.5, reps: 8 })[1]).toEqual({ w: 42.5, r: 8, done: false })
   })
 
-  it('touches nothing for "off" or a first session', () => {
+  it('touches nothing for "off" or a first session without perSet', () => {
     expect(applyPrescription(sets, { kind: 'off' })).toBe(sets)
     expect(applyPrescription(sets, { kind: 'first' })).toBe(sets)
     expect(applyPrescription(sets, null)).toBe(sets)
   })
 
+  it('applies perSet even on first/hold and leaves done sets alone', () => {
+    const out = applyPrescription(sets, {
+      kind: 'first',
+      perSet: [{ weight: 65, reps: 5 }, { weight: 75, reps: 5 }, { weight: 85, reps: 5 }]
+    })
+    expect(out[0]).toEqual({ w: 60, r: 5, done: true })
+    expect(out[1]).toEqual({ w: 75, r: 5, done: false })
+  })
+
   it('adjusts a timed set without inventing a weight', () => {
     const timed = [{ sec: 45, w: 0, done: false }]
     expect(applyPrescription(timed, { kind: 'up', sec: 50 })).toEqual([{ sec: 50, w: 0, done: false }])
+  })
+})
+
+describe('percent / 5/3/1', () => {
+  const cfg = { id: LIFT, sets: 3, reps: 5, weight: 0, prog: 'percent', tm: 100, inc: 2.5 }
+
+  const percentHist = (rows) => ({
+    unit: 'kg',
+    workouts: rows.map((row, i) => ({
+      d: '2026-0' + String(Math.floor(i / 9) + 1) + '-' + String((i % 28) + 1).padStart(2, '0'),
+      entries: [{
+        id: LIFT,
+        plan: {
+          policy: 'percent',
+          week: (i % 4) + 1,
+          perSet: [
+            { weight: row[0], reps: row[3] || 5 },
+            { weight: row[1], reps: row[4] || 5 },
+            { weight: row[2], reps: row[5] || 5 }
+          ]
+        },
+        target: { sets: 3, reps: row[3] || 5, weight: row[0] },
+        sets: [
+          { w: row[0], r: row[6] ?? row[3] ?? 5, done: true },
+          { w: row[1], r: row[7] ?? row[4] ?? 5, done: true },
+          { w: row[2], r: row[8] ?? row[5] ?? 5, done: true }
+        ]
+      }]
+    }))
+  })
+
+  it('asks for a training max before prescribing', () => {
+    const p = nextPrescription({ unit: 'kg', workouts: [] }, { ...cfg, tm: 0 })
+    expect(p.kind).toBe('first')
+    expect(p.perSet).toBeUndefined()
+  })
+
+  it('prescribes week 1 percentages from TM', () => {
+    const p = nextPrescription({ unit: 'kg', workouts: [] }, cfg)
+    expect(p.week).toBe(1)
+    expect(p.perSet.map(s => s.weight)).toEqual([65, 75, 85])
+    expect(p.perSet.map(s => s.reps)).toEqual([5, 5, 5])
+  })
+
+  it('advances through weeks 2–4 from percent history only', () => {
+    // one completed week-1 session
+    const S = percentHist([[65, 75, 85, 5, 5, 5]])
+    expect(nextPrescription(S, cfg).week).toBe(2)
+    expect(nextPrescription(S, cfg).perSet.map(s => s.reps)).toEqual([3, 3, 3])
+  })
+
+  it('week 4 is a deload', () => {
+    const S = percentHist([
+      [65, 75, 85, 5, 5, 5],
+      [70, 80, 90, 3, 3, 3],
+      [75, 85, 95, 5, 3, 1]
+    ])
+    const p = nextPrescription(S, cfg)
+    expect(p.week).toBe(4)
+    expect(p.kind).toBe('deload')
+    expect(p.perSet.map(s => s.weight)).toEqual([40, 50, 60])
+  })
+
+  it('raises TM after a successful week 3, applied on the next cycle', () => {
+    // Full cycle with week-3 AMRAP hit (1 >= 1), then next session is week 1 of cycle 2
+    const S = percentHist([
+      [65, 75, 85, 5, 5, 5],
+      [70, 80, 90, 3, 3, 3],
+      [75, 85, 95, 5, 3, 1, 5, 3, 3], // last set 3 >= 1
+      [40, 50, 60, 5, 5, 5]
+    ])
+    const p = nextPrescription(S, cfg)
+    expect(p.week).toBe(1)
+    expect(p.tm).toBe(102.5)
+    // 102.5 × 65/75/85% snapped to 2.5
+    expect(p.perSet.map(s => s.weight)).toEqual([67.5, 77.5, 87.5])
+  })
+
+  it('does not raise TM after a failed week 3', () => {
+    const S = percentHist([
+      [65, 75, 85, 5, 5, 5],
+      [70, 80, 90, 3, 3, 3],
+      [75, 85, 95, 5, 3, 1, 5, 3, 0], // last set 0 — miss
+      [40, 50, 60, 5, 5, 5]
+    ])
+    const p = nextPrescription(S, cfg)
+    expect(p.tm).toBe(100)
+    expect(p.perSet.map(s => s.weight)).toEqual([65, 75, 85])
+  })
+
+  it('ignores linear history when counting the cycle', () => {
+    const S = {
+      unit: 'kg',
+      workouts: [{
+        d: '2026-01-01',
+        entries: [{
+          id: LIFT,
+          plan: { policy: 'linear' },
+          target: { sets: 3, reps: 5 },
+          sets: [{ w: 60, r: 5, done: true }, { w: 60, r: 5, done: true }, { w: 60, r: 5, done: true }]
+        }]
+      }]
+    }
+    expect(nextPrescription(S, cfg).week).toBe(1)
+  })
+
+  it('refuses percent on time and cardio', () => {
+    expect(policyFor({ id: LIFT, mode: 'time', prog: 'percent' }, null, 'time')).toBe('off')
+    expect(policyFor({ id: CARDIO, prog: 'percent' }, null, 'cardio')).toBe('off')
   })
 })

@@ -64,7 +64,7 @@ export function canonicalPlan(S) {
           min: mode === 'cardio' ? (e.min || 0) : 0,
           speed: mode === 'cardio' ? (e.speed || 0) : 0,
           weight: mode === 'cardio' ? 0 : (e.weight || 0),
-          prog: e.prog || '', inc: e.inc || 0, repsMin: e.repsMin || 0, sg: e.sg || ''
+          prog: e.prog || '', inc: e.inc || 0, repsMin: e.repsMin || 0, tm: e.tm || 0, sg: e.sg || ''
         }
       })
     })),
@@ -76,7 +76,7 @@ export function canonicalPlan(S) {
 export function hashPlan(plan) {
   const canon = JSON.stringify({
     routines: (plan?.routines || []).map(r => [r.id, r.name, r.prog, (r.ex || []).map(e =>
-      [e.id, e.mode, e.sets, e.reps, e.sec, e.min, e.speed, e.weight, e.prog, e.inc, e.repsMin, e.sg].join(':')
+      [e.id, e.mode, e.sets, e.reps, e.sec, e.min, e.speed, e.weight, e.prog, e.inc, e.repsMin, e.tm, e.sg].join(':')
     )]),
     week: Object.keys(plan?.week || {}).sort().map(k => k + '=' + plan.week[k])
   })
@@ -250,6 +250,9 @@ const CHANGE_APPLY = {
     else e.reps = a.reps || 10
     if (a.weight > 0) e.weight = a.weight
     if (POLICIES.includes(a.prog)) e.prog = a.prog
+    if (a.inc > 0) e.inc = a.inc
+    if (a.tm > 0) e.tm = a.tm
+    if (a.note) e.note = String(a.note).slice(0, 280)
     const at = Number.isInteger(a.position) ? Math.min(a.position, r.ex.length) : r.ex.length
     r.ex.splice(at, 0, e)
     cleanupSg(r.ex)

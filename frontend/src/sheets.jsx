@@ -7,11 +7,14 @@ import { lastEntryFor, bestWeightFor, buildSets, effectiveRoutineId, workoutVolu
 import { beep, vibrate } from './lib/sound.js'
 import { t, instrFor, getLang, INSTR_LANGS } from './lib/i18n.js'
 import { nav } from './lib/nav.js'
-import { starterRoutines } from './lib/starter.js'
+import { STARTER_PLANS, KIT_NAME, KIT_DESC, buildStarter } from './lib/starter.js'
+import { matchMachine, matchMachineList } from './lib/machines.js'
+import { emptyGym, activeGym, adaptPlanToGym, buildPlanForGym, exercisesForGym } from './lib/gyms.js'
+import { platesFor } from './lib/plates.js'
 import Media, { Thumb } from './components/Media.jsx'
 import Stepper from './components/Stepper.jsx'
 import Icon from './components/Icon.jsx'
-import { Button, Slider, Switch, Segmented, SelectRow, TextArea } from './components/ui.jsx'
+import { Button, Slider, Switch, Segmented, SelectRow, TextArea, TextField } from './components/ui.jsx'
 import { glyphOf, GLYPH_GROUPS, DEFAULT_GLYPH } from './lib/glyphs.js'
 import BodyMap from './components/BodyMap.jsx'
 import { loadOfWorkouts } from './lib/muscles.js'
@@ -43,14 +46,307 @@ export function confirmSheet(opts) {
 }
 
 /* ============================ starter plan ============================ */
-export function loadStarterPlan() {
-  const [push, pull, legs] = starterRoutines()
+function applyStarter(planId, kit) {
+  const { routines, week, toast: msg } = buildStarter(planId, kit)
   update(st => {
-    st.routines.push(push, pull, legs)
-    st.week[1] = push.id; st.week[3] = pull.id; st.week[5] = legs.id
+    st.routines.push(...routines)
+    Object.assign(st.week, week)
   })
-  toast(t('Starter plan loaded — Mon Push · Wed Pull · Fri Legs'))
+  toast(t(msg))
 }
+
+function StarterPicker({ close }) {
+  const [planId, setPlanId] = useState(null)
+  const plan = STARTER_PLANS.find(p => p.id === planId) || null
+  const [kit, setKit] = useState('gym')
+  const hasRoutines = (S().routines || []).length > 0
+
+  const pick = (id) => {
+    const p = STARTER_PLANS.find(x => x.id === id)
+    setPlanId(id)
+    setKit(p.kits.includes('gym') ? 'gym' : p.kits[0])
+  }
+
+  const load = () => {
+    const go = () => { applyStarter(planId, kit); close() }
+    if (!hasRoutines) return go()
+    close()
+    confirmSheet({
+      title: t('Add this plan?'),
+      message: t('Your existing routines stay. The new week schedule will replace the current one for the days this plan uses.'),
+      confirmText: t('Load plan'),
+      onConfirm: go
+    })
+  }
+
+  if (plan) {
+    return <>
+      <button className="iconbtn" aria-label={t('Back')} onClick={() => setPlanId(null)} style={{ marginBottom: 8 }}>
+        <Icon name="chevronLeft" />
+      </button>
+      <h3 style={{ marginTop: 0 }}>{t(plan.name)}</h3>
+      <div className="muted small" style={{ marginBottom: 14, lineHeight: 1.45 }}>{t(plan.subtitle)}</div>
+      <h4 className="sec">{t('Equipment')}</h4>
+      <div className="row" style={{ flexWrap: 'wrap', gap: 7, marginBottom: 8 }}>
+        {plan.kits.map(k => <button key={k} className={'chip' + (kit === k ? ' on' : '')}
+          onClick={() => setKit(k)}>{t(KIT_NAME[k])}</button>)}
+      </div>
+      <div className="muted small" style={{ marginBottom: 18, lineHeight: 1.45 }}>{t(KIT_DESC[kit])}</div>
+      <Button variant="primary" icon="sparkles" onClick={load}>{t('Load plan')}</Button>
+    </>
+  }
+
+  return <>
+    <h3 style={{ marginTop: 0 }}>{t('Load a starter plan')}</h3>
+    <div className="muted small" style={{ marginBottom: 12, lineHeight: 1.45 }}>
+      {t('Built so each major muscle is trained at least twice a week, with dumbbell, machine and gym versions of the same week.')}
+    </div>
+    <div className="sect-b">
+      {STARTER_PLANS.map(p => <button key={p.id} className="lrow tap" onClick={() => pick(p.id)}>
+        <span className="lrow-m">
+          <span className="lrow-t">{t(p.name)}</span>
+          <span className="lrow-s">{t(p.subtitle)}</span>
+          {p.badge && <span className="tag acc" style={{ marginTop: 6, display: 'inline-block' }}>{t(p.badge)}</span>}
+        </span>
+        <Icon name="chevronRight" className="lrow-k" />
+      </button>)}
+    </div>
+  </>
+}
+
+export function loadStarterPlan() {
+  ui().openSheet(close => <StarterPicker close={close} />)
+}
+
+/* ============================ gyms & machines ============================ */
+function setActiveGym(id, { adapt = true } = {}) {
+  const gym = id ? (S().gyms || []).find(g => g.id === id) : null
+  update(st => { st.activeGymId = id || null })
+  if (adapt && gym && (S().routines || []).length) {
+    let result = { swapped: 0, missing: 0 }
+    update(st => { result = adaptPlanToGym(st, gym) })
+    if (result.swapped || result.missing) {
+      toast(t('Adapted plan for {0}: {1} swapped, {2} unavailable', gym.name, result.swapped, result.missing))
+    } else toast(t('Switched to {0}', gym.name))
+  } else if (gym) toast(t('Switched to {0}', gym.name))
+  else toast(t('Using the full exercise library'))
+}
+
+function PasteMachines({ gymId, close }) {
+  const [text, setText] = useState('')
+  const apply = () => {
+    const { matched, unmatched } = matchMachineList(text)
+    update(st => {
+      const g = (st.gyms || []).find(x => x.id === gymId)
+      if (!g) return
+      const have = new Set((g.machines || []).map(m => m.exId))
+      matched.forEach(m => {
+        if (have.has(m.exId)) return
+        have.add(m.exId)
+        ;(g.machines = g.machines || []).push({ raw: m.raw, exId: m.exId })
+      })
+      // Unmatched names become custom exercises so nothing is dropped.
+      unmatched.forEach(raw => {
+        const name = raw.trim()
+        if (!name) return
+        const id = 'c' + uid()
+        ;(st.customEx = st.customEx || []).push({ id, n: name, bp: 'upper legs', desc: '', tg: '', eq: 'custom', custom: true })
+        ;(g.machines = g.machines || []).push({ raw: name, exId: id })
+      })
+    })
+    toast(t('{0} matched, {1} saved as custom', matched.length, unmatched.length))
+    close()
+  }
+  return <>
+    <h3>{t('Paste machine list')}</h3>
+    <div className="muted small" style={{ marginBottom: 10, lineHeight: 1.45 }}>
+      {t('One name per line — brand names like Life Fitness are fine. Unrecognised names become your own exercises.')}
+    </div>
+    <TextArea rows={8} value={text} onChange={e => setText(e.target.value)}
+      placeholder={'Chest press\nLat pulldown\nLeg press\nSeated row'} />
+    <div style={{ height: 12 }} />
+    <Button variant="primary" disabled={!text.trim()} onClick={apply}>{t('Add machines')}</Button>
+  </>
+}
+
+function AddMachineSearch({ gymId, close }) {
+  const [q, setQ] = useState('')
+  const all = allExercises(S())
+  const ql = q.toLowerCase().trim()
+  const hits = ql
+    ? all.filter(e => e.n.toLowerCase().includes(ql) || (e.eq || '').includes(ql)).slice(0, 40)
+    : []
+  const alias = ql ? matchMachine(q) : null
+  const add = (exId, raw) => {
+    update(st => {
+      const g = (st.gyms || []).find(x => x.id === gymId)
+      if (!g) return
+      if ((g.machines || []).some(m => m.exId === exId)) return
+      ;(g.machines = g.machines || []).push({ raw: raw || (EXIDX[exId] || {}).n || exId, exId })
+    })
+    toast(t('Added'))
+    close()
+  }
+  return <>
+    <h3>{t('Add a machine')}</h3>
+    <div className="search" style={{ marginBottom: 10 }}><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
+      <input className="input" placeholder={t('Search or type a machine name…')} value={q} onChange={e => setQ(e.target.value)} autoFocus /></div>
+    {alias && !hits.some(h => h.id === alias.exId) && (
+      <div className="item" onClick={() => add(alias.exId, q)}>
+        <div className="grow"><div className="tt capitalize">{alias.name}</div><div className="ss">{t('Matched from “{0}”', q)}</div></div>
+        <Icon name="plus" className="chev" />
+      </div>
+    )}
+    <div className="list">
+      {hits.map(e => <div key={e.id} className="item" onClick={() => add(e.id, e.n)}>
+        <Thumb ex={e} />
+        <div className="grow"><div className="tt capitalize">{e.n}</div><div className="ss capitalize">{t(e.eq)}</div></div>
+        <Icon name="plus" className="chev" />
+      </div>)}
+    </div>
+    {!hits.length && ql && !alias && <div className="muted small" style={{ marginTop: 8 }}>{t('No library match — paste a list to save unmatched names as custom exercises.')}</div>}
+  </>
+}
+
+function GymDetail({ gymId, close }) {
+  const st = useStore(s => s.S)
+  const gym = (st.gyms || []).find(g => g.id === gymId)
+  if (!gym) return null
+  const isActive = st.activeGymId === gym.id
+  const machines = gym.machines || []
+
+  const build = (planId) => {
+    const { routines, week, toast: msg } = buildPlanForGym(planId, gym)
+    update(s => {
+      s.routines.push(...routines)
+      Object.assign(s.week, week)
+      s.activeGymId = gym.id
+    })
+    toast(t(msg))
+    close()
+  }
+
+  return <>
+    <h3 style={{ marginTop: 0 }}>{gym.name}</h3>
+    <div className="muted small" style={{ marginBottom: 12 }}>
+      {t(KIT_NAME[gym.kit] || 'Gym')} · {machines.length ? t('{0} machines', machines.length) : t('Kit only — whole category')}
+    </div>
+    <div className="row" style={{ gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+      {!isActive && <Button size="sm" variant="primary" onClick={() => { setActiveGym(gym.id); close() }}>{t('Train here')}</Button>}
+      {isActive && <span className="tag acc">{t('Active')}</span>}
+      <Button size="sm" icon="plus" onClick={() => ui().openSheet(c => <AddMachineSearch gymId={gym.id} close={c} />)}>{t('Add machine')}</Button>
+      <Button size="sm" onClick={() => ui().openSheet(c => <PasteMachines gymId={gym.id} close={c} />)}>{t('Paste list')}</Button>
+    </div>
+    {machines.length > 0 && <div className="list" style={{ marginBottom: 14 }}>
+      {machines.map((m, i) => {
+        const ex = EXIDX[m.exId]
+        return <div key={i} className="item">
+          <div className="grow">
+            <div className="tt capitalize">{ex ? ex.n : m.raw}</div>
+            <div className="ss">{m.raw !== (ex && ex.n) ? m.raw : (ex ? t(ex.eq) : '')}</div>
+          </div>
+          <button className="iconbtn" aria-label={t('Remove')} onClick={() => update(s => {
+            const g = s.gyms.find(x => x.id === gym.id)
+            if (g) g.machines.splice(i, 1)
+          })}><Icon name="minus" /></button>
+        </div>
+      })}
+    </div>}
+    <h4 className="sec">{t('Build a plan for this gym')}</h4>
+    <div className="sect-b" style={{ marginBottom: 12 }}>
+      {STARTER_PLANS.filter(p => p.kits.includes(gym.kit) || gym.kit === 'custom' || p.kits.includes('gym')).slice(0, 4).map(p => (
+        <button key={p.id} className="lrow tap" onClick={() => build(p.id)}>
+          <span className="lrow-m"><span className="lrow-t">{t(p.name)}</span><span className="lrow-s">{t(p.subtitle)}</span></span>
+          <Icon name="sparkles" className="lrow-k" />
+        </button>
+      ))}
+    </div>
+    <Button variant="danger" onClick={() => confirmSheet({
+      title: t('Delete gym?'),
+      message: t('The machine list is removed. Your workouts stay.'),
+      confirmText: t('Delete'),
+      danger: true,
+      onConfirm: () => {
+        update(s => {
+          s.gyms = (s.gyms || []).filter(g => g.id !== gym.id)
+          if (s.activeGymId === gym.id) s.activeGymId = null
+        })
+        close()
+        toast(t('Gym deleted'))
+      }
+    })}>{t('Delete gym')}</Button>
+  </>
+}
+
+function GymsSheet({ close }) {
+  const st = useStore(s => s.S)
+  const gyms = st.gyms || []
+  const [name, setName] = useState('')
+  const [kit, setKit] = useState('gym')
+
+  const add = () => {
+    const n = name.trim() || t('Gym')
+    const g = emptyGym(n, kit)
+    update(s => { (s.gyms = s.gyms || []).push(g) })
+    setName('')
+    ui().openSheet(c => <GymDetail gymId={g.id} close={c} />)
+  }
+
+  return <>
+    <h3 style={{ marginTop: 0 }}>{t('Gyms')}</h3>
+    <div className="muted small" style={{ marginBottom: 12, lineHeight: 1.45 }}>
+      {t('Save each place you train. Switch gyms to filter the library and adapt your plan to the machines on that floor.')}
+    </div>
+    <div className="sect-b" style={{ marginBottom: 12 }}>
+      <button className="lrow tap" onClick={() => { setActiveGym(null, { adapt: false }); close() }}>
+        <span className="lrow-m"><span className="lrow-t">{t('All equipment')}</span><span className="lrow-s">{t('No gym filter')}</span></span>
+        {!st.activeGymId && <Icon name="check" className="lrow-k" />}
+      </button>
+      {gyms.map(g => <button key={g.id} className="lrow tap" onClick={() => { close(); ui().openSheet(c => <GymDetail gymId={g.id} close={c} />) }}>
+        <span className="lrow-m">
+          <span className="lrow-t">{g.name}</span>
+          <span className="lrow-s">{t(KIT_NAME[g.kit] || 'Gym')} · {(g.machines || []).length ? t('{0} machines', g.machines.length) : t('Kit only')}</span>
+        </span>
+        {st.activeGymId === g.id ? <Icon name="check" className="lrow-k" /> : <Icon name="chevronRight" className="lrow-k" />}
+      </button>)}
+    </div>
+    <h4 className="sec">{t('Add a gym')}</h4>
+    <TextField value={name} onChange={e => setName(e.target.value)} placeholder={t('Name (e.g. Home, Office, Downtown)')} />
+    <div className="row" style={{ flexWrap: 'wrap', gap: 7, margin: '10px 0 14px' }}>
+      {['dumbbell', 'machine', 'gym'].map(k => <button key={k} className={'chip' + (kit === k ? ' on' : '')}
+        onClick={() => setKit(k)}>{t(KIT_NAME[k])}</button>)}
+    </div>
+    <Button variant="primary" icon="plus" onClick={add}>{t('Add gym')}</Button>
+  </>
+}
+
+export function gymsSheet() {
+  ui().openSheet(close => <GymsSheet close={close} />)
+}
+
+/* ============================ plate calculator ============================ */
+function PlatesSheet({ weight: initial, unit, close }) {
+  const [w, setW] = useState(initial || 0)
+  const r = platesFor(w, unit)
+  return <>
+    <h3 style={{ marginTop: 0 }}>{t('Plate calculator')}</h3>
+    <div className="muted small" style={{ marginBottom: 12 }}>{t('Bar {0} {1} — plates per side', r.bar, unit)}</div>
+    <Stepper label={t('Target ({0})', unit)} value={w} step={unit === 'lb' ? 5 : 2.5} onChange={setW} />
+    <div style={{ height: 14 }} />
+    {r.perSide.length === 0
+      ? <div className="muted small">{t('At or below the bar — no plates needed.')}</div>
+      : <div className="list">{r.perSide.map(p => <div key={p.weight} className="item">
+        <div className="grow"><div className="tt">{p.weight} {unit}</div><div className="ss">{t('per side')}</div></div>
+        <span className="tag acc">× {p.count}</span>
+      </div>)}</div>}
+    {r.leftover > 0 && <div className="small" style={{ marginTop: 10, color: 'var(--yellow)' }}>
+      {t('{0} {1} left over — closest load is {2} {1}', fmtNum(r.leftover), unit, fmtNum(r.total))}
+    </div>}
+    <div style={{ height: 12 }} />
+    <Button onClick={close}>{t('Done')}</Button>
+  </>
+}
+export const platesSheet = (weight, unit) => ui().openSheet(close => <PlatesSheet weight={weight} unit={unit} close={close} />)
 
 /* ============================ weight picker (shared: body weight + goal) ============================ */
 // Fixed range, not a moving window — a window that resizes itself mid-drag (the previous
@@ -416,7 +712,7 @@ function ExercisePicker({ onPick, close }) {
   const [eq, setEq] = useState('')          // '' = any equipment
   const [shown, setShown] = useState(50)
   const ql = q.toLowerCase().trim()
-  const all = allExercises(st)
+  const all = exercisesForGym(st)
   let base = all.filter(e =>
     (bp === '★' ? usage[e.id] : (!bp || e.bp === bp)) &&
     (!ql || e.n.toLowerCase().includes(ql) || e.tg.includes(ql) || e.eq.includes(ql) || (e.desc || '').toLowerCase().includes(ql)))
@@ -473,7 +769,13 @@ function ProgressionFields({ ex, mode, c, setC, routine, unit }) {
           ...options.map(p => ({ value: p, label: t(POLICY_NAME[p]) }))]} />
     </div>
     <div className="small dim" style={{ marginBottom: active === 'off' ? 18 : 10 }}>{t(POLICY_DESC[active])}</div>
-    {active !== 'off' && <div className="row cfgrow" style={{ marginBottom: 18 }}>
+    {active === 'percent' && <div className="row cfgrow" style={{ marginBottom: 18 }}>
+      <Stepper label={t('Training max ({0})', unit)} value={c.tm || 0} step={unit === 'lb' ? 5 : 2.5}
+        onChange={v => setC(x => ({ ...x, tm: v, sets: 3 }))} />
+      <Stepper label={t('Step ({0})', unit)} value={inc} step={1.25} decimal
+        onChange={v => setC(x => ({ ...x, inc: v }))} />
+    </div>}
+    {active !== 'off' && active !== 'percent' && <div className="row cfgrow" style={{ marginBottom: 18 }}>
       <Stepper label={mode === 'time' ? t('Step (seconds)') : t('Step ({0})', unit)} value={inc}
         step={mode === 'time' ? 5 : 1.25} decimal={mode !== 'time'} onChange={v => setC(x => ({ ...x, inc: v }))} />
       {active === 'double' && <Stepper label={t('Reps from')} value={c.repsMin || Math.max(1, (c.reps || 10) - 2)}
@@ -499,12 +801,22 @@ function ExConfig({ ex, existing, onSave, onDelete, close, routine }) {
     const prog = {}
     if (c.prog) prog.prog = c.prog
     if (c.inc > 0) prog.inc = c.inc
-    if (cardio) onSave({ sets, min: Math.max(1, Math.round(c.min) || 20), speed: Math.max(0, c.speed || 8) })
+    const note = (c.note || '').trim().slice(0, 280)
+    if (note) prog.note = note
+    const activeProg = policyFor({ ...c, id: ex.id }, routine, mode)
+    if (activeProg === 'percent' && c.tm > 0) prog.tm = c.tm
+    if (cardio) onSave({ sets, min: Math.max(1, Math.round(c.min) || 20), speed: Math.max(0, c.speed || 8), ...(note ? { note } : {}) })
     else if (mode === 'time') onSave({ sets, mode: 'time', sec: Math.max(1, Math.round(c.sec) || 45), weight: Math.max(0, c.weight || 0), ...prog })
     else {
       const reps = Math.max(1, Math.round(c.reps) || 10)
-      const out = { sets, mode: 'reps', reps, weight: Math.max(0, c.weight || 0), ...prog }
-      if (policyFor({ ...c, id: ex.id }, routine, 'reps') === 'double') out.repsMin = Math.min(reps, Math.max(1, Math.round(c.repsMin) || Math.max(1, reps - 2)))
+      const out = {
+        sets: activeProg === 'percent' ? 3 : sets,
+        mode: 'reps',
+        reps: activeProg === 'percent' ? 5 : reps,
+        weight: Math.max(0, c.weight || 0),
+        ...prog
+      }
+      if (activeProg === 'double') out.repsMin = Math.min(reps, Math.max(1, Math.round(c.repsMin) || Math.max(1, reps - 2)))
       onSave(out)
     }
   }
@@ -539,6 +851,9 @@ function ExConfig({ ex, existing, onSave, onDelete, close, routine }) {
       {t('A timer runs while you hold the set. Leave the weight at 0 for bodyweight holds.')}
     </div>}
     <ProgressionFields ex={ex} mode={mode} c={c} setC={setC} routine={routine} unit={st.unit} />
+    <h4 className="sec">{t('Note')}</h4>
+    <TextArea rows={2} maxLength={280} value={c.note || ''} onChange={e => setC(x => ({ ...x, note: e.target.value }))}
+      placeholder={t('Cue for yourself — shown during the workout')} style={{ marginBottom: 14 }} />
     <Button variant="primary" onClick={save}>{existing ? t('Save') : t('Add to routine')}</Button>
     {ex.custom && <><div style={{ height: 8 }} /><Button icon="pencil" onClick={() => { close(); customExSheet(ex) }}>{t('Edit or delete this exercise')}</Button></>}
     {onDelete && <><div style={{ height: 8 }} /><Button variant="danger" onClick={() => { close(); onDelete() }}>{t('Remove from routine')}</Button></>}
@@ -779,7 +1094,20 @@ export function beginWorkout(routineId, bw) {
   // kept on the entry purely so the workout can explain the number it chose.
   const entries = (r ? r.ex : []).map(cfg => {
     const plan = nextPrescription(st, cfg, r)
-    return { id: cfg.id, sg: cfg.sg, target: { ...cfg }, plan, sets: applyPrescription(buildSets(st, cfg), plan) }
+    // 5/3/1 always wants three working sets; pad/truncate the built rows to match perSet.
+    let sets = buildSets(st, cfg)
+    if (plan.perSet?.length) {
+      const n = plan.perSet.length
+      while (sets.length < n) sets.push({ w: sets[sets.length - 1]?.w || 0, r: sets[sets.length - 1]?.r || 0, done: false })
+      if (sets.length > n) sets = sets.slice(0, n)
+      // Store the wave on the target so history can judge AMRAP hits later.
+      return {
+        id: cfg.id, sg: cfg.sg,
+        target: { ...cfg, sets: n, reps: plan.perSet[0].reps, weight: plan.perSet[0].weight },
+        plan, sets: applyPrescription(sets, plan)
+      }
+    }
+    return { id: cfg.id, sg: cfg.sg, target: { ...cfg }, plan, sets: applyPrescription(sets, plan) }
   })
   update(s => {
     s.active = { id: uid(), d: todayISO(), start: Date.now(), routineId, name: r ? r.name : t('Freestyle'), bw: bw || null, cur: 0, entries }
